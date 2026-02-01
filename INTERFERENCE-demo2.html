@@ -1,0 +1,380 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Two Coherent Sources – Path Difference Demo</title>
+
+  <meta name="viewport"
+        content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+
+  <style>
+    body { font-family: system-ui, Arial; margin: 14px; font-size: 22px; }
+    h2 { margin: 8px 0 10px; }
+    .row { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
+    canvas { border: 1px solid #ccc; border-radius: 10px; width: 100%; max-width: 1100px; height: auto; }
+    button, select, input { font-size: 20px; padding: 10px 14px; }
+    label { display: inline-flex; gap: 10px; align-items: center; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .card { border: 1px solid #e2e2e2; border-radius: 12px; padding: 10px 12px; max-width: 1100px; }
+    .banner {
+      font-weight: 800;
+      font-size: 28px;
+      padding: 10px 14px;
+      border-radius: 12px;
+      display: inline-block;
+      margin-left: 10px;
+      border: 2px solid rgba(0,0,0,0.15);
+    }
+    .small { font-size: 18px; opacity: 0.9; }
+    html, body { overscroll-behavior: none; touch-action: manipulation; }
+  </style>
+</head>
+
+<body>
+  <h2>Two Coherent Sources – Path Difference & Phase</h2>
+
+  <div class="card">
+    <div class="row">
+      <label>
+        Initial phase:
+        <select id="phi0">
+          <option value="0">in phase (φ₀ = 0)</option>
+          <option value="3.141592653589793">out of phase (φ₀ = π)</option>
+        </select>
+      </label>
+
+      <label>
+        Wavelength λ:
+        <input id="lambda" type="range" min="40" max="140" value="80">
+        <span id="lambdaVal" class="mono"></span>
+      </label>
+
+      <label>
+        Source separation d:
+        <input id="sep" type="range" min="20" max="180" value="90">
+        <span id="sepVal" class="mono"></span>
+      </label>
+
+      <label>
+        Speed:
+        <input id="speed" type="range" min="0.0" max="3.0" step="0.1" value="1.2">
+        <span id="speedVal" class="mono"></span>
+      </label>
+
+      <button id="pauseBtn">Pause</button>
+    </div>
+
+    <div class="row">
+      Snap Δr to:
+      <button data-snap="0">0</button>
+      <button data-snap="0.5">½λ</button>
+      <button data-snap="1">1λ</button>
+      <button data-snap="1.5">3/2 λ</button>
+      <button id="free">Free move</button>
+
+      <span class="banner" id="banner">—</span>
+    </div>
+
+    <div class="row small">
+      <span class="mono" id="readout"></span>
+    </div>
+
+    <div class="row small">
+      Phase rule:
+      <span class="mono">Δφ = 2π(Δr/λ) + φ₀</span>
+      &nbsp; • &nbsp; in phase when <span class="mono">Δφ ≈ 0 (mod 2π)</span>
+      &nbsp; • &nbsp; out of phase when <span class="mono">Δφ ≈ π (mod 2π)</span>
+    </div>
+  </div>
+
+  <div style="margin-top:10px;">
+    <canvas id="c" width="1100" height="560"></canvas>
+  </div>
+
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+const phi0Sel = document.getElementById('phi0');
+const lambdaSlider = document.getElementById('lambda');
+const sepSlider = document.getElementById('sep');
+const speedSlider = document.getElementById('speed');
+
+const lambdaVal = document.getElementById('lambdaVal');
+const sepVal = document.getElementById('sepVal');
+const speedVal = document.getElementById('speedVal');
+const readout = document.getElementById('readout');
+const banner = document.getElementById('banner');
+
+const pauseBtn = document.getElementById('pauseBtn');
+
+let W = canvas.width, H = canvas.height;
+
+function worldToScreen(p){ return { x: p.x + W*0.5, y: H*0.5 - p.y }; }
+function screenToWorld(p){ return { x: p.x - W*0.5, y: H*0.5 - p.y }; }
+
+let dragging = false;
+let freeMove = true;
+let snapTarget = null;
+
+let P = { x: 260, y: 140 };
+
+let t = 0;
+let paused = false;
+
+function mod2pi(a){
+  const TWO = Math.PI*2;
+  a = a % TWO;
+  if (a < 0) a += TWO;
+  return a;
+}
+
+function classifyPhase(dphiWrapped){
+  const inPhaseDist = Math.min(dphiWrapped, 2*Math.PI - dphiWrapped);
+  const outPhaseDist = Math.abs(dphiWrapped - Math.PI);
+  return (inPhaseDist < outPhaseDist) ? "IN PHASE (constructive)" : "OUT OF PHASE (destructive)";
+}
+
+/**
+ * Draw:
+ *  1) thin solid straight path line A->B (geometry)
+ *  2) a sine-wave "rope" drawn along the path, wavelength = lambdaPx
+ *
+ * Inputs:
+ *  - rPx: path length in pixels (same coordinate system as lambdaPx)
+ *  - phiSrc: initial phase of that source (0 for S1, phi0 for S2)
+ *  - omega/k uses same visual time as wavefronts, so rope "wiggles" animate consistently
+ */
+function drawRopePath(A, B, rPx, lambdaPx, k, omega, phiSrc, label){
+  const a = worldToScreen(A);
+  const b = worldToScreen(B);
+
+  // --- 1) Solid geometric path ---
+  ctx.strokeStyle = "rgba(0,0,0,0.30)";
+  ctx.lineWidth = 2.0;
+  ctx.setLineDash([]);
+  ctx.beginPath();
+  ctx.moveTo(a.x, a.y);
+  ctx.lineTo(b.x, b.y);
+  ctx.stroke();
+
+  // --- 2) Sine wave drawn along the segment ---
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const L = Math.hypot(dx, dy);
+  if (L < 1) return;
+
+  const ux = dx / L, uy = dy / L;     // unit along
+  const nx = -uy, ny = ux;            // unit normal
+
+  // amplitude: keep it readable but not ridiculous when λ changes
+  const amp = Math.max(6, Math.min(18, lambdaPx * 0.12));
+
+  // sample step: smaller => smoother curve
+  const step = 3; // pixels along the path per step
+
+  ctx.strokeStyle = "rgba(0,0,0,0.85)";
+  ctx.lineWidth = 2.5;
+  ctx.setLineDash([]); // rope should be continuous
+
+  ctx.beginPath();
+  for (let s = 0; s <= rPx; s += step){
+    // s is distance from source along the path (in pixels)
+    // Rope displacement uses the SAME wave model: sin(k*s - ωt + phiSrc)
+    const disp = amp * Math.sin(k*s - omega*t + phiSrc);
+
+    const px = a.x + ux * s + nx * disp;
+    const py = a.y + uy * s + ny * disp;
+
+    if (s === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
+  }
+  // ensure we end exactly at the endpoint
+  const dispEnd = amp * Math.sin(k*rPx - omega*t + phiSrc);
+  ctx.lineTo(a.x + ux*rPx + nx*dispEnd, a.y + uy*rPx + ny*dispEnd);
+
+  ctx.stroke();
+
+  // --- Label near midpoint ---
+  const midx = (a.x + b.x) / 2;
+  const midy = (a.y + b.y) / 2;
+  ctx.fillStyle = "#333";
+  ctx.fillText(label, midx + 10, midy - 10);
+}
+
+function draw(){
+  const lambda = +lambdaSlider.value;   // pixels represent λ
+  const d = +sepSlider.value;
+  const speed = +speedSlider.value;
+  const phi0 = +phi0Sel.value;
+
+  lambdaVal.textContent = lambda.toFixed(0);
+  sepVal.textContent = d.toFixed(0);
+  speedVal.textContent = speed.toFixed(1);
+
+  const S1 = { x: -d/2, y: 0 };
+  const S2 = { x: +d/2, y: 0 };
+
+  // snapping: adjust P.x while keeping P.y fixed to satisfy Δr ≈ snapTarget*λ
+  if (!freeMove && snapTarget !== null){
+    const yFixed = P.y;
+    let bestX = P.x, bestErr = 1e9;
+    for (let x = 40; x <= 520; x += 1){
+      const r1t = Math.hypot(x - S1.x, yFixed - S1.y);
+      const r2t = Math.hypot(x - S2.x, yFixed - S2.y);
+      const drt = r2t - r1t;
+      const target = snapTarget * lambda;
+      const err = Math.abs(drt - target);
+      if (err < bestErr){
+        bestErr = err; bestX = x;
+      }
+    }
+    P.x = bestX;
+  }
+
+  const r1 = Math.hypot(P.x - S1.x, P.y - S1.y);
+  const r2 = Math.hypot(P.x - S2.x, P.y - S2.y);
+  const dr = r2 - r1;
+
+  const k = 2*Math.PI / lambda;
+  const omega = speed * k;
+
+  const dphi = k*dr + phi0;
+  const dphiWrapped = mod2pi(dphi);
+
+  const state = classifyPhase(dphiWrapped);
+
+  banner.textContent = state.includes("IN PHASE") ? "CONSTRUCTIVE" : "DESTRUCTIVE";
+  banner.style.background = state.includes("IN PHASE") ? "rgba(0,200,0,0.15)" : "rgba(220,0,0,0.15)";
+
+  readout.textContent =
+    `Δr = ${dr.toFixed(1)} px   |   Δr/λ = ${(dr/lambda).toFixed(2)}   |   Δφ = ${dphiWrapped.toFixed(2)} rad   |   φ₀ = ${(phi0/Math.PI).toFixed(0)}π`;
+
+  // clear
+  ctx.clearRect(0,0,W,H);
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(0,0,W,H);
+
+  // axes (light)
+  ctx.strokeStyle = "#eee";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(0, H*0.5); ctx.lineTo(W, H*0.5);
+  ctx.moveTo(W*0.5, 0); ctx.lineTo(W*0.5, H);
+  ctx.stroke();
+
+  // draw sources
+  ctx.font = "18px system-ui, Arial";
+  function drawPoint(p, label){
+    const s = worldToScreen(p);
+    ctx.fillStyle = "#111";
+    ctx.beginPath(); ctx.arc(s.x, s.y, 8, 0, Math.PI*2); ctx.fill();
+    ctx.fillText(label, s.x+12, s.y-12);
+  }
+  drawPoint(S1, "S₁");
+  drawPoint(S2, "S₂");
+
+  // wavefront circles (crests)
+  function drawWavefronts(S, phaseOffset){
+    const s = worldToScreen(S);
+    for (let n = -6; n < 40; n++){
+      const r = (omega*t - phaseOffset + 2*Math.PI*n)/k;
+      if (r <= 0) continue;
+      ctx.strokeStyle = "rgba(0,0,0,0.10)";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, r, 0, Math.PI*2);
+      ctx.stroke();
+    }
+  }
+  drawWavefronts(S1, 0);
+  drawWavefronts(S2, phi0);
+
+  // observation point
+  const pS = worldToScreen(P);
+  ctx.fillStyle = "#c00";
+  ctx.beginPath(); ctx.arc(pS.x, pS.y, 9, 0, Math.PI*2); ctx.fill();
+  ctx.fillText("P", pS.x+12, pS.y-12);
+
+  // rope-like paths (sine waves along the path)
+  // S1 has phase 0, S2 has phase phi0
+  drawRopePath(S1, P, r1, lambda, k, omega, 0,   `r₁ = ${(r1/lambda).toFixed(2)} λ`);
+  drawRopePath(S2, P, r2, lambda, k, omega, phi0, `r₂ = ${(r2/lambda).toFixed(2)} λ`);
+
+  // little panel showing y1, y2, sum
+  function signal(r, phaseSrc){ return Math.sin(k*r - omega*t + phaseSrc); }
+  const y1 = signal(r1, 0);
+  const y2 = signal(r2, phi0);
+  const ySum = y1 + y2;
+
+  const bx = 20, by = 20, bw = 620, bh = 120;
+  ctx.fillStyle = "rgba(250,250,250,0.92)";
+  ctx.strokeStyle = "#ddd";
+  ctx.lineWidth = 1.5;
+  ctx.fillRect(bx,by,bw,bh);
+  ctx.strokeRect(bx,by,bw,bh);
+
+  ctx.fillStyle = "#111";
+  ctx.font = "18px system-ui, Arial";
+  ctx.fillText(`At P: y₁ = ${y1.toFixed(2)}   |   y₂ = ${y2.toFixed(2)}   |   y = y₁ + y₂ = ${ySum.toFixed(2)}`, bx+14, by+42);
+  ctx.fillText(`Interpretation: ${state}`, bx+14, by+78);
+
+  if (!paused) t += 0.03;
+  requestAnimationFrame(draw);
+}
+
+// Mouse drag (desktop)
+canvas.addEventListener('mousedown', (e)=>{
+  dragging = true;
+  const rect = canvas.getBoundingClientRect();
+  const m = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  P = screenToWorld(m);
+});
+window.addEventListener('mousemove', (e)=>{
+  if (!dragging || !freeMove) return;
+  const rect = canvas.getBoundingClientRect();
+  const m = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  P = screenToWorld(m);
+});
+window.addEventListener('mouseup', ()=> dragging=false);
+
+// Touch drag (iPad/iPhone)
+canvas.addEventListener('touchstart', e=>{
+  e.preventDefault();
+  const rect = canvas.getBoundingClientRect();
+  const tt = e.touches[0];
+  P = screenToWorld({ x: tt.clientX - rect.left, y: tt.clientY - rect.top });
+  dragging = true;
+}, {passive:false});
+
+canvas.addEventListener('touchmove', e=>{
+  if (!dragging || !freeMove) return;
+  e.preventDefault();
+  const rect = canvas.getBoundingClientRect();
+  const tt = e.touches[0];
+  P = screenToWorld({ x: tt.clientX - rect.left, y: tt.clientY - rect.top });
+}, {passive:false});
+
+window.addEventListener('touchend', ()=> dragging=false);
+
+document.querySelectorAll('button[data-snap]').forEach(btn=>{
+  btn.addEventListener('click', ()=>{
+    freeMove = false;
+    snapTarget = +btn.getAttribute('data-snap');
+  });
+});
+
+document.getElementById('free').addEventListener('click', ()=>{
+  freeMove = true;
+  snapTarget = null;
+});
+
+pauseBtn.addEventListener('click', ()=>{
+  paused = !paused;
+  pauseBtn.textContent = paused ? "Play" : "Pause";
+});
+
+draw();
+</script>
+</body>
+</html>
